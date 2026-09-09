@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+cd "$ROOT_DIR"
+
+echo "Checking Terraform formatting..."
+terraform fmt -check -recursive
+
+echo "Checking generated Terraform documentation..."
+scripts/terraform-docs.sh --check
+
+if command -v tflint >/dev/null 2>&1; then
+  echo "Checking Terraform with TFLint..."
+  tflint --recursive --format compact --config "$ROOT_DIR/.tflint.hcl"
+fi
+
+echo "Terraform pre-commit checks passed."

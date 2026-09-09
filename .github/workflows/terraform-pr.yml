@@ -1,0 +1,127 @@
+name: Terraform Checks
+
+on:
+  pull_request:
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - ready_for_review
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    name: Formatting, docs, lint, and security
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6.0.3
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v4.0.1
+        with:
+          terraform_version: 1.16.0
+          terraform_wrapper: false
+
+      - name: Install terraform-docs
+        env:
+          TERRAFORM_DOCS_VERSION: 0.24.0
+        run: |
+          curl -sSLo /tmp/terraform-docs.tar.gz "https://github.com/terraform-docs/terraform-docs/releases/download/v${TERRAFORM_DOCS_VERSION}/terraform-docs-v${TERRAFORM_DOCS_VERSION}-linux-amd64.tar.gz"
+          tar -xzf /tmp/terraform-docs.tar.gz -C /tmp terraform-docs
+          sudo install -m 0755 /tmp/terraform-docs /usr/local/bin/terraform-docs
+
+      - name: Terraform fmt
+        run: terraform fmt -check -recursive
+
+      - name: Check generated docs
+        run: scripts/terraform-docs.sh --check
+
+      - name: Setup TFLint
+        uses: terraform-linters/setup-tflint@v6.2.2
+        with:
+          tflint_version: v0.64.0
+          cache: true
+
+      - name: Initialize TFLint plugins
+        run: tflint --init
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+      - name: Run TFLint
+        run: tflint --recursive --format compact --config "${GITHUB_WORKSPACE}/.tflint.hcl"
+
+      - name: Scan Terraform configuration
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: config
+          scan-ref: .
+          hide-progress: true
+          exit-code: 1
+          severity: HIGH,CRITICAL
+          skip-dirs: .terraform
+
+  compatibility:
+    name: Terraform ${{ matrix.terraform }} / AWS provider ${{ matrix.provider }}
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - terraform: 1.11.4
+            provider: minimum
+            upgrade: false
+          - terraform: 1.16.0
+            provider: latest-v6
+            upgrade: true
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6.0.3
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v4.0.1
+        with:
+          terraform_version: ${{ matrix.terraform }}
+          terraform_wrapper: false
+
+      - name: Pin the minimum supported provider
+        if: ${{ !matrix.upgrade }}
+        run: |
+          sed -i 's/>= 6.63.0, < 7.0.0/= 6.63.0/g' versions.tf
+
+      - name: Remove locks for latest-provider coverage
+        if: matrix.upgrade
+        run: find . -name .terraform.lock.hcl -delete
+
+      - name: Terraform init
+        run: terraform init -backend=false ${{ matrix.upgrade && '-upgrade' || '' }}
+
+      - name: Terraform validate
+        run: terraform validate
+
+      - name: Terraform test
+        run: terraform test -no-color
+
+      - name: Validate examples
+        env:
+          UPGRADE: ${{ matrix.upgrade }}
+        run: |
+          for example in examples/*; do
+            if [ -d "$example" ]; then
+              if [ "$UPGRADE" = "true" ]; then
+                terraform -chdir="$example" init -backend=false -upgrade
+              else
+                terraform -chdir="$example" init -backend=false
+              fi
+              terraform -chdir="$example" validate
+            fi
+          done
