@@ -24,7 +24,11 @@ module "documentdb" {
   ingress_rules = {
     application = { description = "Application database access", referenced_security_group_id = var.application_security_group_id }
   }
-  tags                     = { Environment = "example" }
-  snapshot_identifier      = var.snapshot_identifier
-  restore_to_point_in_time = var.restore_to_point_in_time
+  tags                             = { Environment = "example" }
+  snapshot_identifier              = var.snapshot_identifier
+  restore_to_point_in_time         = var.restore_to_point_in_time
+  manage_credentials_after_restore = var.manage_credentials_after_restore
+  manage_master_user_password      = var.manage_master_user_password
+  master_password_wo               = var.master_password_wo
+  master_password_wo_version       = var.master_password_wo_version
 }
