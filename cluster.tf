@@ -7,7 +7,7 @@ resource "aws_docdb_cluster" "main" {
   cluster_members                 = var.cluster_members
   engine                          = var.engine
   engine_version                  = var.engine_version
-  master_username                 = local.use_credentials ? var.master_username : null
+  master_username                 = local.use_master_username ? var.master_username : null
   manage_master_user_password     = local.use_credentials && var.manage_master_user_password ? true : null
   master_password                 = local.use_credentials ? var.master_password : null
   master_password_wo              = local.use_credentials ? var.master_password_wo : null
@@ -90,10 +90,10 @@ resource "aws_docdb_cluster" "main" {
     }
     precondition {
       condition     = !local.use_credentials || var.manage_master_user_password || var.master_password != null || var.master_password_wo_version != null
-      error_message = "A new primary requires managed credentials, master_password, or master_password_wo with master_password_wo_version."
+      error_message = "Managing primary credentials requires managed passwords, master_password, or master_password_wo with master_password_wo_version."
     }
     precondition {
-      condition     = !local.use_credentials || try(length(var.master_username) > 0, false)
+      condition     = !local.use_master_username || try(length(var.master_username) > 0, false)
       error_message = "A new primary requires master_username."
     }
     precondition {
@@ -126,23 +126,25 @@ resource "aws_docdb_cluster" "main" {
 resource "aws_docdb_cluster_instance" "main" {
   for_each = local.instances
 
-  region                          = var.region
-  cluster_identifier              = aws_docdb_cluster.main[0].cluster_identifier
-  identifier                      = each.value.identifier_prefix == null ? coalesce(each.value.identifier, "${var.name}-${each.key}") : null
-  identifier_prefix               = each.value.identifier_prefix
-  instance_class                  = local.instance_classes[each.key]
-  engine                          = var.engine
-  availability_zone               = each.value.availability_zone
-  apply_immediately               = coalesce(each.value.apply_immediately, var.apply_immediately)
-  auto_minor_version_upgrade      = coalesce(each.value.auto_minor_version_upgrade, var.auto_minor_version_upgrade)
-  ca_cert_identifier              = each.value.ca_cert_identifier != null ? each.value.ca_cert_identifier : var.ca_cert_identifier
-  certificate_rotation_restart    = each.value.certificate_rotation_restart != null ? each.value.certificate_rotation_restart : var.certificate_rotation_restart
-  copy_tags_to_snapshot           = coalesce(each.value.copy_tags_to_snapshot, var.copy_tags_to_snapshot)
-  enable_performance_insights     = coalesce(each.value.enable_performance_insights, var.enable_performance_insights)
-  performance_insights_kms_key_id = each.value.performance_insights_kms_key_id != null ? each.value.performance_insights_kms_key_id : var.performance_insights_kms_key_id
-  preferred_maintenance_window    = each.value.preferred_maintenance_window != null ? each.value.preferred_maintenance_window : var.preferred_maintenance_window
-  promotion_tier                  = each.value.promotion_tier
-  tags                            = merge(local.common_tags, each.value.tags)
+  region                       = var.region
+  cluster_identifier           = aws_docdb_cluster.main[0].cluster_identifier
+  identifier                   = each.value.identifier_prefix == null ? coalesce(each.value.identifier, "${var.name}-${each.key}") : null
+  identifier_prefix            = each.value.identifier_prefix
+  instance_class               = local.instance_classes[each.key]
+  engine                       = var.engine
+  availability_zone            = each.value.availability_zone
+  apply_immediately            = coalesce(each.value.apply_immediately, var.apply_immediately)
+  auto_minor_version_upgrade   = coalesce(each.value.auto_minor_version_upgrade, var.auto_minor_version_upgrade)
+  ca_cert_identifier           = each.value.ca_cert_identifier != null ? each.value.ca_cert_identifier : var.ca_cert_identifier
+  certificate_rotation_restart = each.value.certificate_rotation_restart != null ? each.value.certificate_rotation_restart : var.certificate_rotation_restart
+  copy_tags_to_snapshot        = coalesce(each.value.copy_tags_to_snapshot, var.copy_tags_to_snapshot)
+  enable_performance_insights  = local.instance_performance_insights_enabled[each.key]
+  performance_insights_kms_key_id = local.instance_performance_insights_enabled[each.key] ? (
+    each.value.performance_insights_kms_key_id != null ? each.value.performance_insights_kms_key_id : var.performance_insights_kms_key_id
+  ) : null
+  preferred_maintenance_window = each.value.preferred_maintenance_window != null ? each.value.preferred_maintenance_window : var.preferred_maintenance_window
+  promotion_tier               = each.value.promotion_tier
+  tags                         = merge(local.common_tags, each.value.tags)
 
   dynamic "timeouts" {
     for_each = each.value.timeouts != null ? [each.value.timeouts] : (var.instance_timeouts == null ? [] : [var.instance_timeouts])
@@ -159,10 +161,8 @@ resource "aws_docdb_cluster_instance" "main" {
       error_message = "db.serverless instances require serverless_v2_scaling_configuration on the cluster."
     }
     precondition {
-      condition = (each.value.performance_insights_kms_key_id == null && var.performance_insights_kms_key_id == null) || coalesce(
-        each.value.enable_performance_insights, var.enable_performance_insights
-      )
-      error_message = "A Performance Insights KMS key requires enable_performance_insights on that instance."
+      condition     = each.value.performance_insights_kms_key_id == null || local.instance_performance_insights_enabled[each.key]
+      error_message = "An explicitly configured instance Performance Insights KMS key requires enable_performance_insights on that instance."
     }
     precondition {
       condition = !local.validate_engine || each.value.availability_zone == null ? true : contains(

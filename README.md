@@ -1,14 +1,19 @@
 # Terraform AWS DocumentDB Module
 
+Reusable Amazon DocumentDB module available on the Terraform Registry as [native-cube/documentdb/aws](https://registry.terraform.io/modules/native-cube/documentdb/aws/latest).
+
 Supports provisioned and Serverless instance clusters, mixed instance classes, global databases, Elastic clusters, snapshot and point-in-time restores, one-time snapshots, event subscriptions, parameter groups, subnet groups, security groups, and CloudWatch log groups.
 
 The root module accepts existing VPCs, subnets, KMS keys, and SNS topics. Configure AWS providers in the calling configuration. Defaults include encrypted storage, seven-day backups, deletion protection and a required final snapshot for instance-based clusters, managed credentials for new standalone primaries, and no security group traffic rules until declared. The default compute configuration is one instance; add readers for compute redundancy.
 
 ## Usage
 
+Requires Terraform **1.11.4 or later** and AWS provider **6.63.0 or later within v6**. Install the module using its Registry source address:
+
 ```hcl
 module "documentdb" {
-  source = "./terraform-aws-documentdb"
+  source  = "native-cube/documentdb/aws"
+  version = "~> 1.0"
 
   name                      = "orders-production"
   engine_version            = var.documentdb_engine_version
@@ -36,7 +41,14 @@ module "documentdb" {
 }
 ```
 
-Use the local source path until the repository is published. No release or Registry version has been published by this implementation.
+The `~> 1.0` constraint accepts v1 releases and excludes v2. To select the initial release exactly, use `version = "1.0.0"`. Review available versions and release-specific documentation on the [Terraform Registry](https://registry.terraform.io/modules/native-cube/documentdb/aws/latest) before upgrading.
+
+Configure your AWS provider and supply the referenced input variables, then initialize and review the plan:
+
+```sh
+terraform init
+terraform plan
+```
 
 ## Deployment modes
 
@@ -78,6 +90,8 @@ New standalone primaries use DocumentDB-managed passwords by default. `master_us
 
 For caller-managed credentials, set `manage_master_user_password = false`, pass the ephemeral `master_password_wo`, and supply a positive `master_password_wo_version`. Increment the version whenever the password changes. Terraform 1.11+ sends the write-only value without persisting it in plan or state. The optional legacy `master_password` argument is sensitive but is stored in state; prefer the write-only alternative. These password modes conflict.
 
+Restored primaries inherit credentials by default. After restoration completes, set `manage_credentials_after_restore = true` on a subsequent apply to enable the same password-management inputs while retaining the restore configuration. The inherited username remains unchanged. See the restore procedure below.
+
 Global databases require caller-managed credentials on the primary; the module omits credentials on secondaries. This follows [AWS's managed-password restrictions](https://docs.aws.amazon.com/documentdb/latest/devguide/docdb-secrets-manager.html).
 
 Elastic uses a separate `elastic_admin_user_password`. Its provider resource has no write-only argument, so Terraform stores that sensitive value in state. The provider exposes both `PLAIN_TEXT` and `SECRET_ARN` authentication enums; the runnable example uses `PLAIN_TEXT`. AWS currently lists Secrets Manager among [Elastic limitations](https://docs.aws.amazon.com/documentdb/latest/devguide/docdb-using-elastic-clusters.html), so do not assume the API enum means the service supports that workflow in your deployment.
@@ -88,15 +102,27 @@ Supply private subnets in at least two Availability Zones. Live network checks v
 
 Each security rule requires exactly one IPv4 CIDR, IPv6 CIDR, prefix list, or referenced security group. TCP/UDP ports default to the database port. Other protocols use the supplied ports/type/code; protocol `-1` must omit ports. `create_security_group = false` requires existing security group IDs and means rule maps are not used. Use generated names for managed security/parameter groups to permit create-before-destroy replacement; fixed names may require an explicit rename when replacing a resource.
 
+`cluster_endpoint`, `cluster_reader_endpoint`, and `instances` wait for module-managed instances and security group rules to complete before downstream Terraform resources consume them. `elastic_cluster_endpoint` similarly waits for the Elastic cluster and managed rules. These dependencies do not test database connectivity or wait for externally managed instances/rules. Use structural outputs such as `security_group_id` when wiring network rules; making a rule depend on an endpoint that waits for that rule would create a dependency cycle.
+
 `validate_engine_capabilities` queries the selected Region for the requested engine version, instance class, Availability Zone, log exports and parameter family. Keep both validation switches enabled for normal plans. Mocked/offline consumers can disable them. Regional service combinations, quotas, Serverless availability, and global database eligibility remain AWS validations; a successful mocked plan does not prove deployability in an account.
 
 Configure engine parameters to enable auditing/profiling and select the corresponding `enabled_cloudwatch_logs_exports`. Log groups are created first with configurable retention, KMS encryption, deletion protection and skip-destroy behavior. See [AWS's two-step log export setup](https://docs.aws.amazon.com/documentdb/latest/devguide/event-auditing.html). Generated cluster identifier prefixes require `create_cloudwatch_log_groups = false`, since their eventual log group names are unknown before cluster creation. Other resources continue to use `name` as their naming base.
 
 Set `engine_version` explicitly for controlled upgrades; null permits the AWS default. Instance minor upgrades and certificate settings are configurable. `apply_immediately = false` defers eligible changes to maintenance. `storage_type = "iopt1"` selects I/O-Optimized storage. Serverless DCUs support half-unit increments with minimum capacity at least 0.5 and maximum capacity from 1 to 256; removing the scaling block forces replacement.
 
+Each instance can override `enable_performance_insights`. The shared `performance_insights_kms_key_id` is sent only to instances with Insights enabled, so an individual instance can disable Insights even when a shared key is configured. An explicit per-instance key still requires Insights to be enabled on that instance.
+
 ## Restore, global lifecycle, and snapshots
 
-Choose one of `snapshot_identifier` or `restore_to_point_in_time`. PITR requires exactly one of an RFC3339 `restore_to_time` or `use_latest_restorable_time = true`. Restores inherit credentials, so the module omits all primary credential settings. To change credential ownership after restoration, complete and review that as a separate operational change; simply supplying a password while the restore input remains configured does not rotate it through this module.
+Choose one of `snapshot_identifier` or `restore_to_point_in_time`. PITR requires exactly one of an RFC3339 `restore_to_time` or `use_latest_restorable_time = true`. The [restore example](examples/restore) requires exactly one restore source and rejects empty snapshot names, preventing accidental creation of a fresh database when inputs are omitted. The root module continues to permit new clusters without a restore source.
+
+For a restored primary, password management uses this sequence:
+
+1. Complete restoration with `manage_credentials_after_restore = false` (the default), inheriting the source credentials.
+2. Keep the original restore input configured and set `manage_credentials_after_restore = true` on a subsequent apply. Leave `manage_master_user_password = true` to adopt DocumentDB-managed passwords, or set it to `false` and provide `master_password_wo` plus a positive `master_password_wo_version` for caller-managed credentials. The legacy sensitive `master_password` is also supported.
+3. For later write-only password rotations, update the ephemeral password and increment its version. Review the plan and the applicable `apply_immediately` setting before applying.
+
+Enabling password management does not set `master_username`; restores always retain the inherited username, avoiding a username-driven replacement. Global secondaries still receive no credentials. Keep the opt-in enabled while managing credentials and change the password mode or password explicitly; disabling the flag is not a rollback and can plan changes to password management. Do not enable it during the initial PITR creation: AWS provider 6.63.0 does not send password settings in that creation path, and write-only values cannot be recovered from state for a later retry. Restore first, then opt in and supply the password/version.
 
 The provider's PITR creation path does not forward every ordinary cluster setting. Review a subsequent plan after restoration to reconcile settings such as backup retention, maintenance windows and parameter-group association. Storage encryption is inherited from the source; setting `storage_encrypted = true` is not a conversion mechanism for an unencrypted snapshot. The restore APIs do not attach global membership, so the module rejects a restore combined with a global identifier.
 
@@ -117,11 +143,11 @@ Elastic's separate API does not expose instance-cluster deletion protection, fin
 - [Elastic](examples/elastic): sharded deployment using the separate Elastic API.
 - [Restore](examples/restore): snapshot or point-in-time recovery.
 
-Examples consume `../..` and take existing infrastructure as required inputs. Engine versions remain caller-selected so examples do not silently choose an upgrade or assume regional availability.
+Examples consume `../..` so they run against the repository checkout, and take existing infrastructure as required inputs. To use an example in another project, replace each module's local source with `source = "native-cube/documentdb/aws"` and add `version = "~> 1.0"`, as shown in [Usage](#usage). Engine versions remain caller-selected so examples do not silently choose an upgrade or assume regional availability.
 
 ## Development
 
-Run `make check` for formatting, generated docs, initialization, validation, native Terraform tests, and validation of every example. Tests use mocked providers and never contact AWS APIs. `make lint` runs TFLint; `make security` runs Trivy. `make hooks` enables the repository-local pre-commit hook after this directory is initialized as a Git repository.
+Run `make check` for formatting, generated docs, initialization, validation, native Terraform tests, endpoint dependency checks, and validation of every example. Native tests use mocked providers; `make test-dependencies` checks dependency paths in Terraform's graph without contacting AWS APIs. Python 3 is required for the graph check. `make lint` runs TFLint; `make security` runs Trivy. `make hooks` enables the repository-local pre-commit hook.
 
 GitHub Actions checks formatting, generated docs, TFLint and Trivy, then runs minimum and latest supported compatibility jobs. The minimum job explicitly pins AWS 6.63.0; the latest job upgrades within v6. Do not edit the generated documentation below manually; run `make docs` instead.
 
@@ -212,19 +238,20 @@ GitHub Actions checks formatting, generated docs, TFLint and Trivy, then runs mi
 | <a name="input_instances"></a> [instances](#input\_instances) | Instance configurations keyed by stable caller-chosen keys. Empty maps permit externally managed compute; used only for instance clusters. | <pre>map(object({<br/>    identifier                      = optional(string)<br/>    identifier_prefix               = optional(string)<br/>    instance_class                  = optional(string)<br/>    availability_zone               = optional(string)<br/>    apply_immediately               = optional(bool)<br/>    auto_minor_version_upgrade      = optional(bool)<br/>    ca_cert_identifier              = optional(string)<br/>    certificate_rotation_restart    = optional(bool)<br/>    copy_tags_to_snapshot           = optional(bool)<br/>    enable_performance_insights     = optional(bool)<br/>    performance_insights_kms_key_id = optional(string)<br/>    preferred_maintenance_window    = optional(string)<br/>    promotion_tier                  = optional(number, 0)<br/>    tags                            = optional(map(string), {})<br/>    timeouts                        = optional(object({ create = optional(string), update = optional(string), delete = optional(string) }))<br/>  }))</pre> | <pre>{<br/>  "one": {}<br/>}</pre> | no |
 | <a name="input_is_primary_cluster"></a> [is\_primary\_cluster](#input\_is\_primary\_cluster) | Whether this is the primary cluster; false requires a global cluster identifier and omits credentials. | `bool` | `true` | no |
 | <a name="input_kms_key_id"></a> [kms\_key\_id](#input\_kms\_key\_id) | Existing KMS key ARN for cluster storage encryption; null uses the AWS-managed key. | `string` | `null` | no |
-| <a name="input_manage_master_user_password"></a> [manage\_master\_user\_password](#input\_manage\_master\_user\_password) | Let DocumentDB manage the password in Secrets Manager. Set false for global databases or caller-managed passwords. Restore operations inherit credentials. | `bool` | `true` | no |
+| <a name="input_manage_credentials_after_restore"></a> [manage\_credentials\_after\_restore](#input\_manage\_credentials\_after\_restore) | Opt in to managing a restored primary's password after restoration completes. Enable on a subsequent apply, retaining the restore input. Uses the normal managed or caller-managed password settings; the inherited username is never changed. | `bool` | `false` | no |
+| <a name="input_manage_master_user_password"></a> [manage\_master\_user\_password](#input\_manage\_master\_user\_password) | Let DocumentDB manage the password in Secrets Manager. Set false for global databases or caller-managed passwords. Restored clusters inherit credentials unless manage\_credentials\_after\_restore is enabled. | `bool` | `true` | no |
 | <a name="input_master_password"></a> [master\_password](#input\_master\_password) | Optional legacy caller-managed password stored in Terraform state. Prefer master\_password\_wo. Conflicts with managed passwords and write-only credentials. | `string` | `null` | no |
 | <a name="input_master_password_wo"></a> [master\_password\_wo](#input\_master\_password\_wo) | Ephemeral write-only password; never stored in plans or state. Supply a version to trigger rotation. | `string` | `null` | no |
 | <a name="input_master_password_wo_version"></a> [master\_password\_wo\_version](#input\_master\_password\_wo\_version) | Positive password rotation version. Increment whenever master\_password\_wo changes. | `number` | `null` | no |
 | <a name="input_master_username"></a> [master\_username](#input\_master\_username) | Primary cluster administrator username. Omitted for restores and global secondaries. | `string` | `"dbadmin"` | no |
 | <a name="input_name"></a> [name](#input\_name) | Cluster name and default prefix for related resources. | `string` | n/a | yes |
 | <a name="input_network_type"></a> [network\_type](#input\_network\_type) | Instance cluster network stack. DUAL requires IPv6-capable subnets. | `string` | `"IPV4"` | no |
-| <a name="input_performance_insights_kms_key_id"></a> [performance\_insights\_kms\_key\_id](#input\_performance\_insights\_kms\_key\_id) | Default existing KMS key for instance Performance Insights; requires enable\_performance\_insights. | `string` | `null` | no |
+| <a name="input_performance_insights_kms_key_id"></a> [performance\_insights\_kms\_key\_id](#input\_performance\_insights\_kms\_key\_id) | Default existing KMS key for instances with Performance Insights enabled. Omitted for instances that disable Performance Insights. | `string` | `null` | no |
 | <a name="input_port"></a> [port](#input\_port) | Database port; Elastic supports only 27017. | `number` | `27017` | no |
 | <a name="input_preferred_backup_window"></a> [preferred\_backup\_window](#input\_preferred\_backup\_window) | Daily UTC backup window (hh:mm-hh:mm); null lets AWS select. | `string` | `null` | no |
 | <a name="input_preferred_maintenance_window"></a> [preferred\_maintenance\_window](#input\_preferred\_maintenance\_window) | Weekly UTC cluster maintenance window (ddd:hh:mm-ddd:hh:mm). | `string` | `null` | no |
 | <a name="input_region"></a> [region](#input\_region) | Optional resource Region; defaults to the AWS provider Region. | `string` | `null` | no |
-| <a name="input_restore_to_point_in_time"></a> [restore\_to\_point\_in\_time](#input\_restore\_to\_point\_in\_time) | Point-in-time restore source and exactly one time selection. Credentials are inherited. | <pre>object({<br/>    source_cluster_identifier  = string<br/>    restore_type               = optional(string, "full-copy")<br/>    restore_to_time            = optional(string)<br/>    use_latest_restorable_time = optional(bool, false)<br/>  })</pre> | `null` | no |
+| <a name="input_restore_to_point_in_time"></a> [restore\_to\_point\_in\_time](#input\_restore\_to\_point\_in\_time) | Point-in-time restore source and exactly one time selection. Credentials are inherited unless manage\_credentials\_after\_restore is enabled after restoration. | <pre>object({<br/>    source_cluster_identifier  = string<br/>    restore_type               = optional(string, "full-copy")<br/>    restore_to_time            = optional(string)<br/>    use_latest_restorable_time = optional(bool, false)<br/>  })</pre> | `null` | no |
 | <a name="input_revoke_rules_on_delete"></a> [revoke\_rules\_on\_delete](#input\_revoke\_rules\_on\_delete) | Revoke security group rules before deleting the group. | `bool` | `false` | no |
 | <a name="input_security_group_description"></a> [security\_group\_description](#input\_security\_group\_description) | Description of the managed security group. | `string` | `"DocumentDB access"` | no |
 | <a name="input_security_group_ids"></a> [security\_group\_ids](#input\_security\_group\_ids) | Existing VPC security groups to attach alongside the optional managed group. | `list(string)` | `[]` | no |
@@ -248,7 +275,7 @@ GitHub Actions checks formatting, generated docs, TFLint and Trivy, then runs mi
 | ---- | ----------- |
 | <a name="output_cloudwatch_log_group_arns"></a> [cloudwatch\_log\_group\_arns](#output\_cloudwatch\_log\_group\_arns) | Log group ARNs keyed by export type. |
 | <a name="output_cluster_arn"></a> [cluster\_arn](#output\_cluster\_arn) | Cluster ARN. |
-| <a name="output_cluster_endpoint"></a> [cluster\_endpoint](#output\_cluster\_endpoint) | Writer DNS endpoint. |
+| <a name="output_cluster_endpoint"></a> [cluster\_endpoint](#output\_cluster\_endpoint) | Writer DNS endpoint, available to dependent resources after module-managed instances and security group rules complete. |
 | <a name="output_cluster_engine_version"></a> [cluster\_engine\_version](#output\_cluster\_engine\_version) | Actual engine version. |
 | <a name="output_cluster_hosted_zone_id"></a> [cluster\_hosted\_zone\_id](#output\_cluster\_hosted\_zone\_id) | Endpoint Route 53 hosted zone ID. |
 | <a name="output_cluster_identifier"></a> [cluster\_identifier](#output\_cluster\_identifier) | Cluster identifier. |
@@ -256,12 +283,12 @@ GitHub Actions checks formatting, generated docs, TFLint and Trivy, then runs mi
 | <a name="output_cluster_parameter_group_arn"></a> [cluster\_parameter\_group\_arn](#output\_cluster\_parameter\_group\_arn) | Module-created parameter group ARN. |
 | <a name="output_cluster_parameter_group_name"></a> [cluster\_parameter\_group\_name](#output\_cluster\_parameter\_group\_name) | Managed or supplied cluster parameter group name. |
 | <a name="output_cluster_port"></a> [cluster\_port](#output\_cluster\_port) | Database port. |
-| <a name="output_cluster_reader_endpoint"></a> [cluster\_reader\_endpoint](#output\_cluster\_reader\_endpoint) | Reader DNS endpoint. |
+| <a name="output_cluster_reader_endpoint"></a> [cluster\_reader\_endpoint](#output\_cluster\_reader\_endpoint) | Reader DNS endpoint, available to dependent resources after module-managed instances and security group rules complete. |
 | <a name="output_cluster_resource_id"></a> [cluster\_resource\_id](#output\_cluster\_resource\_id) | Immutable regional cluster resource ID. |
 | <a name="output_db_subnet_group_arn"></a> [db\_subnet\_group\_arn](#output\_db\_subnet\_group\_arn) | Module-created subnet group ARN. |
 | <a name="output_db_subnet_group_name"></a> [db\_subnet\_group\_name](#output\_db\_subnet\_group\_name) | Managed or supplied subnet group name. |
 | <a name="output_elastic_cluster_arn"></a> [elastic\_cluster\_arn](#output\_elastic\_cluster\_arn) | Elastic cluster arn. |
-| <a name="output_elastic_cluster_endpoint"></a> [elastic\_cluster\_endpoint](#output\_elastic\_cluster\_endpoint) | Elastic cluster endpoint. |
+| <a name="output_elastic_cluster_endpoint"></a> [elastic\_cluster\_endpoint](#output\_elastic\_cluster\_endpoint) | Elastic cluster endpoint, available to dependent resources after the cluster and module-managed security group rules complete. |
 | <a name="output_elastic_cluster_id"></a> [elastic\_cluster\_id](#output\_elastic\_cluster\_id) | Elastic cluster id. |
 | <a name="output_event_subscription_arns"></a> [event\_subscription\_arns](#output\_event\_subscription\_arns) | Event subscription ARNs keyed by caller names. |
 | <a name="output_global_cluster_arn"></a> [global\_cluster\_arn](#output\_global\_cluster\_arn) | DocumentDB global container arn. |
@@ -269,7 +296,7 @@ GitHub Actions checks formatting, generated docs, TFLint and Trivy, then runs mi
 | <a name="output_global_cluster_members"></a> [global\_cluster\_members](#output\_global\_cluster\_members) | DocumentDB global container global cluster members. |
 | <a name="output_global_cluster_resource_id"></a> [global\_cluster\_resource\_id](#output\_global\_cluster\_resource\_id) | DocumentDB global container global cluster resource id. |
 | <a name="output_global_cluster_status"></a> [global\_cluster\_status](#output\_global\_cluster\_status) | DocumentDB global container status. |
-| <a name="output_instances"></a> [instances](#output\_instances) | Instance metadata keyed by the caller-provided instance keys. |
+| <a name="output_instances"></a> [instances](#output\_instances) | Instance metadata keyed by the caller-provided instance keys, available after module-managed instances and security group rules complete. |
 | <a name="output_master_user_secret"></a> [master\_user\_secret](#output\_master\_user\_secret) | Managed secret metadata only: ARN, KMS key, and status. No password is returned. |
 | <a name="output_master_user_secret_arn"></a> [master\_user\_secret\_arn](#output\_master\_user\_secret\_arn) | ARN of the DocumentDB-managed password secret, when available. |
 | <a name="output_security_group_id"></a> [security\_group\_id](#output\_security\_group\_id) | Module-created security group ID. |

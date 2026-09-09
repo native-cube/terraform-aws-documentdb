@@ -1,5 +1,7 @@
 # Serverless DocumentDB example
 
+This example uses the local module source `../..`. To use the published [native-cube/documentdb/aws module](https://registry.terraform.io/modules/native-cube/documentdb/aws/latest), set each module block to `source = "native-cube/documentdb/aws"` and add `version = "~> 1.0"`. See the [module usage instructions](../../README.md#usage).
+
 A Serverless writer and reader sharing a 0.5-16 DCU capacity range. Provisioned readers can be mixed in by overriding instance_class on individual map entries. Removing the scaling configuration forces cluster replacement.
 
 Requires existing networking and an AWS identity with permission to manage these resources. Set all required inputs in an untracked `terraform.tfvars` or through `TF_VAR_*`.

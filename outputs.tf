@@ -14,13 +14,25 @@ output "cluster_resource_id" {
 }
 
 output "cluster_endpoint" {
-  description = "Writer DNS endpoint."
+  description = "Writer DNS endpoint, available to dependent resources after module-managed instances and security group rules complete."
   value       = try(aws_docdb_cluster.main[0].endpoint, null)
+
+  depends_on = [
+    aws_docdb_cluster_instance.main,
+    aws_vpc_security_group_ingress_rule.main,
+    aws_vpc_security_group_egress_rule.main
+  ]
 }
 
 output "cluster_reader_endpoint" {
-  description = "Reader DNS endpoint."
+  description = "Reader DNS endpoint, available to dependent resources after module-managed instances and security group rules complete."
   value       = try(aws_docdb_cluster.main[0].reader_endpoint, null)
+
+  depends_on = [
+    aws_docdb_cluster_instance.main,
+    aws_vpc_security_group_ingress_rule.main,
+    aws_vpc_security_group_egress_rule.main
+  ]
 }
 
 output "cluster_port" {
@@ -54,7 +66,7 @@ output "master_user_secret_arn" {
 }
 
 output "instances" {
-  description = "Instance metadata keyed by the caller-provided instance keys."
+  description = "Instance metadata keyed by the caller-provided instance keys, available after module-managed instances and security group rules complete."
   value = { for key, instance in aws_docdb_cluster_instance.main : key => {
     identifier         = instance.identifier
     arn                = instance.arn
@@ -68,6 +80,11 @@ output "instances" {
     ca_cert_identifier = instance.ca_cert_identifier
     storage_encrypted  = instance.storage_encrypted
   } }
+
+  depends_on = [
+    aws_vpc_security_group_ingress_rule.main,
+    aws_vpc_security_group_egress_rule.main
+  ]
 }
 
 output "global_cluster_arn" {
@@ -101,8 +118,13 @@ output "elastic_cluster_arn" {
 }
 
 output "elastic_cluster_endpoint" {
-  description = "Elastic cluster endpoint."
+  description = "Elastic cluster endpoint, available to dependent resources after the cluster and module-managed security group rules complete."
   value       = try(aws_docdbelastic_cluster.main[0].endpoint, null)
+
+  depends_on = [
+    aws_vpc_security_group_ingress_rule.main,
+    aws_vpc_security_group_egress_rule.main
+  ]
 }
 
 output "elastic_cluster_id" {

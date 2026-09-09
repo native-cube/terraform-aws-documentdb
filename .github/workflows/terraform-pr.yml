@@ -111,6 +111,9 @@ jobs:
       - name: Terraform test
         run: terraform test -no-color
 
+      - name: Check endpoint dependencies
+        run: python3 scripts/check-endpoint-dependencies.py
+
       - name: Validate examples
         env:
           UPGRADE: ${{ matrix.upgrade }}

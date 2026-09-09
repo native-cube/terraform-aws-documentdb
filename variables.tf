@@ -120,9 +120,16 @@ variable "is_primary_cluster" {
 }
 
 variable "manage_master_user_password" {
-  description = "Let DocumentDB manage the password in Secrets Manager. Set false for global databases or caller-managed passwords. Restore operations inherit credentials."
+  description = "Let DocumentDB manage the password in Secrets Manager. Set false for global databases or caller-managed passwords. Restored clusters inherit credentials unless manage_credentials_after_restore is enabled."
   type        = bool
   default     = true
+  nullable    = false
+}
+
+variable "manage_credentials_after_restore" {
+  description = "Opt in to managing a restored primary's password after restoration completes. Enable on a subsequent apply, retaining the restore input. Uses the normal managed or caller-managed password settings; the inherited username is never changed."
+  type        = bool
+  default     = false
   nullable    = false
 }
 
@@ -298,7 +305,7 @@ variable "skip_final_snapshot" {
 }
 
 variable "performance_insights_kms_key_id" {
-  description = "Default existing KMS key for instance Performance Insights; requires enable_performance_insights."
+  description = "Default existing KMS key for instances with Performance Insights enabled. Omitted for instances that disable Performance Insights."
   type        = string
   default     = null
 }
@@ -316,7 +323,7 @@ variable "snapshot_identifier" {
 }
 
 variable "restore_to_point_in_time" {
-  description = "Point-in-time restore source and exactly one time selection. Credentials are inherited."
+  description = "Point-in-time restore source and exactly one time selection. Credentials are inherited unless manage_credentials_after_restore is enabled after restoration."
   type = object({
     source_cluster_identifier  = string
     restore_type               = optional(string, "full-copy")

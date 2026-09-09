@@ -6,7 +6,8 @@ locals {
   create_subnet_group   = local.create_docdb && var.create_db_subnet_group
   create_security_group = local.create_cluster && var.create_security_group
   is_restore            = var.snapshot_identifier != null || var.restore_to_point_in_time != null
-  use_credentials       = local.create_docdb && var.is_primary_cluster && !local.is_restore
+  use_master_username   = local.create_docdb && var.is_primary_cluster && !local.is_restore
+  use_credentials       = local.create_docdb && var.is_primary_cluster && (!local.is_restore || var.manage_credentials_after_restore)
   is_global             = var.create_global_cluster || var.global_cluster_identifier != null
   validate_network      = local.create_cluster && var.validate_network_configuration
   validate_engine       = local.create_docdb && var.validate_engine_capabilities
@@ -19,6 +20,9 @@ locals {
   instances = local.create_docdb ? var.instances : {}
   instance_classes = {
     for key, instance in local.instances : key => coalesce(instance.instance_class, var.instance_class)
+  }
+  instance_performance_insights_enabled = {
+    for key, instance in local.instances : key => coalesce(instance.enable_performance_insights, var.enable_performance_insights)
   }
   db_subnet_group_name = local.create_subnet_group ? aws_docdb_subnet_group.main[0].name : (
     local.validate_network && local.create_docdb ? data.aws_db_subnet_group.existing[0].name : var.db_subnet_group_name
